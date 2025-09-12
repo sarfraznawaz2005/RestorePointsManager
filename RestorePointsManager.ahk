@@ -37,6 +37,8 @@ CheckAdmin() {
 
 ; ---------- Global Variables ----------
 global guiMain := ""
+global lblRestorePointsCount := ""
+global lblDiskSpaceUsed := ""
 global lvRestorePoints := ""
 global btnCreate := ""
 global btnDelete := ""
@@ -66,8 +68,16 @@ CreateGUI() {
     trayMenu.Add("Reload", (*) => Reload())
     trayMenu.Add("Exit", (*) => ExitApp())
     
+    ; Label for restore points count (left side)
+    global lblRestorePointsCount := guiMain.Add("Text", "x10 y5 w250 h20", "Restore Points: 0")
+    lblRestorePointsCount.SetFont("s10", "Segoe UI")
+    
+    ; Label for disk space used (right side)
+    global lblDiskSpaceUsed := guiMain.Add("Text", "x350 y5 w250 h20 Right", "Disk Space Used: 0 GB")
+    lblDiskSpaceUsed.SetFont("s10", "Segoe UI")
+    
     ; ListView for restore points
-    global lvRestorePoints := guiMain.Add("ListView", "x10 y0 w700 h330 grid", ["ID", "Creation Time", "Description"])
+    global lvRestorePoints := guiMain.Add("ListView", "x10 y30 w600 h300 grid", ["ID", "Creation Time", "Description"])
     lvRestorePoints.ModifyCol(1, 30)   ; ID column
     lvRestorePoints.ModifyCol(2, 160)  ; Creation Time column
     lvRestorePoints.ModifyCol(3, 'AutoHdr')  ; Description column
@@ -85,7 +95,7 @@ CreateGUI() {
     global btnRefresh := guiMain.Add("Button", "x120 y340 w100 h30", "🔃 Refresh")
     btnRefresh.OnEvent("Click", (*) => RefreshRestorePoints())
     
-    global btnDelete := guiMain.Add("Button", "x610 y340 w100 h30", "❌ Delete")
+    global btnDelete := guiMain.Add("Button", "x510 y340 w100 h30", "❌ Delete")
     btnDelete.OnEvent("Click", DeleteRestorePoint)
     btnDelete.Enabled := false  ; Disabled by default
     
@@ -125,9 +135,96 @@ HideProgress() {
 }
 
 ; ---------- Restore Point Functions ----------
+GetRestorePointsCount() {
+    try {
+        ; Use WMI to get restore points
+        wmi := ComObject("WbemScripting.SWbemLocator")
+        service := wmi.ConnectServer(".", "root\default")
+        service.Security_.ImpersonationLevel := 3
+        
+        ; Query restore points
+        colItems := service.ExecQuery("SELECT * FROM SystemRestore")
+        
+        items := []
+        for item in colItems {
+            items.Push([item.SequenceNumber, item.CreationTime, item.Description])
+        }
+        
+        ; Get count of restore points
+        return items.Length
+    } catch as e {
+        LogError("Failed to get restore points count: " e.Message)
+        return 0
+    }
+}
+
+GetRestorePointsStorageInfo() {
+    try {
+        ; Try to get restore points storage information using vssadmin
+        storageInfo := ""
+        try {
+            ; Create temporary file path
+            tempFile := A_ScriptDir "\vss_output.txt"
+            
+            ; Run vssadmin command and capture output
+            cmd := "cmd.exe /c vssadmin.exe list shadowstorage > " Chr(34) tempFile Chr(34) " 2>&1"
+            RunWait(cmd, , "Hide")
+            
+            ; Read the output file
+            if (FileExist(tempFile)) {
+                output := FileRead(tempFile)
+                try FileDelete(tempFile) ; Clean up temp file
+                
+                ; Parse the output to extract storage information
+                ; Looking for lines like:
+                ; "Used Shadow Copy Storage space: X.XXX GB"
+                
+                usedSpace := ""
+                
+                Loop Parse output, "`n", "`r" {
+                    line := Trim(A_LoopField)
+                    if (InStr(line, "Used Shadow Copy Storage space:")) {
+                        usedSpace := StrReplace(line, "Used Shadow Copy Storage space:", "")
+                        usedSpace := Trim(usedSpace)
+                        ; Remove the percentage part if it exists
+                        if (InStr(usedSpace, "(")) {
+                            usedSpace := Trim(SubStr(usedSpace, 1, InStr(usedSpace, "(") - 1))
+                        }
+                        break
+                    }
+                }
+                
+                ; Return just the used space value
+                if (usedSpace != "") {
+                    return usedSpace
+                }
+            }
+        } catch as e {
+            LogDebug("Failed to get restore points storage info: " e.Message)
+        }
+        
+        return ""
+    } catch as e {
+        LogError("Failed to get restore points storage info: " e.Message)
+        return ""
+    }
+}
+
 RefreshRestorePoints() {
     LogDebug("Refreshing restore points")
     ShowProgress("Loading restore points...")
+    
+    ; Update restore points info
+    count := GetRestorePointsCount()
+    storageInfo := GetRestorePointsStorageInfo()
+    
+    ; Update the labels
+    lblRestorePointsCount.Text := "Restore Points: " count
+    if (storageInfo != "") {
+        lblDiskSpaceUsed.Text := "Disk Space Used: " storageInfo
+    } else {
+        lblDiskSpaceUsed.Text := "Disk Space Used: Unknown"
+    }
     
     ; Clear existing items
     lvRestorePoints.Delete()
@@ -180,6 +277,13 @@ RefreshRestorePoints() {
         HideProgress()
         ; Update button state after refresh
         UpdateDeleteButtonState()
+        ; Update disk space info
+        storageInfo := GetRestorePointsStorageInfo()
+        if (storageInfo != "") {
+            lblDiskSpaceUsed.Text := "Disk Space Used: " storageInfo
+        } else {
+            lblDiskSpaceUsed.Text := "Disk Space Used: Unknown"
+        }
     }
 }
 
@@ -272,6 +376,13 @@ CreateRestorePoint(*) {
         MsgBox("Failed to create restore point: " e.Message, "Error", 16)
     } finally {
         HideProgress()
+        ; Update disk space info
+        storageInfo := GetRestorePointsStorageInfo()
+        if (storageInfo != "") {
+            lblDiskSpaceUsed.Text := "Disk Space Used: " storageInfo
+        } else {
+            lblDiskSpaceUsed.Text := "Disk Space Used: Unknown"
+        }
     }
 }
 
@@ -304,5 +415,12 @@ DeleteRestorePoint(*) {
         MsgBox("Failed to delete restore point: " e.Message, "Error", 16)
     } finally {
         HideProgress()
+        ; Update disk space info
+        storageInfo := GetRestorePointsStorageInfo()
+        if (storageInfo != "") {
+            lblDiskSpaceUsed.Text := "Disk Space Used: " storageInfo
+        } else {
+            lblDiskSpaceUsed.Text := "Disk Space Used: Unknown"
+        }
     }
 }
